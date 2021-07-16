@@ -1,0 +1,360 @@
+---
+title: "Titanic Data Set
+"
+output: html_notebook
+---
+
+Work through the kaggle Titanic competition found [here](https://www.kaggle.com/c/titanic) with bagging, random forest, and GBM boosting.
+
+## Libraries I might Use
+
+```{r}
+library(tidyverse)
+library(class)
+library(ISLR)
+library(tidyverse)
+library(randomForest)
+library(gbm)
+library(MASS)
+library(rpart)
+library(caTools)
+```
+
+
+
+## Loading in the Data
+
+```{r}
+train_data = read.csv("train.csv") # Train data Is really my sample overall
+test_data = read.csv("test.csv") # New predictions will be performed on this data set
+```
+
+
+## Encoding Factors and forcing NA for char columns
+
+```{r}
+train_data[train_data==""] <- NA
+train_data$Sex=factor(train_data$Sex, levels=c("male","female") ,labels = c(0,1))
+train_data$Pclass=factor(train_data$Pclass, levels = c(1,2,3), labels = c(0,1,2))
+train_data$Embarked=factor(train_data$Embarked, levels = c("C","Q","S"), labels = c(0,1,2))
+train_data$Survived=factor(train_data$Survived)
+train_data
+```
+
+
+
+
+
+# Exploring the data
+
+```{r}
+train_data
+```
+
+```{r}
+summary(train_data)
+```
+
+
+1. I'm predicting Survived
+
+2. Intuitively, I'd expect Pclass to be a significant predictor
+
+3. Likewise, don't women and children always go first? So age and sex should be valuable predictors.
+
+4. SibSp represents the number of siblings/spouses aboard. Maybe important? If there are people with you they might help you escape, but you might also stay behind for them.
+
+5. Parch is the number of parents or children abboard. If you are young I'd expect higher number of parents increases your chance, while if you are older the number of children might cause you to hold back trying to help them.
+
+6. Information in fare is probably contained in class
+
+7. Cabin/Ticket seem unlikely to provide much meaningful information
+
+8. embarked is the port of embarkation. Unlikely to help much, but I'm not that confident about it.
+
+All told our big factors are pclass, age, sex, sibsp, parch. Maybe embarked.
+
+```{r}
+ggplot(train_data)+
+  geom_violin(aes(x=Survived, y = Age, fill = Survived))
+```
+Right away we are reminded of 177 missing age values seen inthe summary.
+
+We can also see that the didnt survive group has has a heavier weight around the age of 25.
+
+```{r}
+ggplot(train_data[which(is.na(train_data$Age)),])+
+  geom_bar(aes(x=Survived, fill = Survived))
+```
+
+Most of our missing values died
+
+```{r}
+train_data[which(is.na(train_data$Age)),]
+```
+
+
+```{r}
+ggplot(train_data)+
+  geom_bar(aes(x=Pclass, fill = Survived))
+```
+Ticket class breakdown is as you would expect.
+
+```{r}
+ggplot(train_data)+
+  geom_bar(aes(x=Embarked, fill = Survived))
+```
+There is more infromation that you would expect here. the final port of embarkation (southhampton) had the most people, but it also has the worst percentage of survival.
+
+```{r}
+ggplot(train_data)+
+  geom_bar(aes(x=SibSp, fill = Survived))
+```
+
+Most people had 0 spouses or siblings aboard, the better percentage at 1 could be attributed directly to spouse, but that doesn't hold up for the better percentage at 2
+
+```{r}
+ggplot(train_data)+
+  geom_bar(aes(x=Parch, fill = Survived))
+```
+Increased survival at 1, 2, and 3. 1 and 2 are most likely being weighted by parents. 3 is interesting.
+
+```{r}
+ggplot(train_data)+
+  geom_bar(aes(x=Sex, fill = Survived))
+```
+
+Women survived at a MUCH higher rate.
+
+```{r}
+train_data$agegroup = ifelse(train_data$Age < 16, 0, ifelse(train_data$Age < 50, 1, 2))
+ggplot(train_data)+
+ geom_bar(aes(x=agegroup, fill = Survived))
+```
+
+
+Children survive, those > 50 hardly do.
+
+
+# Dealing with Missing Values
+
+Now that we have explored the data, lets deal with the missing values in embarked and age. We will be using survival, pclass, sex, age, sibsp, parch, and embarked to predict the others
+
+```{r}
+clean_data = train_data[,c(2,3,5,6,7,8, 12)]
+clean_data
+```
+
+## Embarked
+```{r}
+clean_data_embarked = clean_data[-which(is.na(train_data$Embarked)),]
+clean_data_embarked
+```
+
+### Test/Train Split
+
+
+```{r}
+set.seed(1234)
+split = sample.split(clean_data_embarked$Survived, SplitRatio = 0.8)
+train = subset(clean_data_embarked, split == TRUE) 
+test = subset(clean_data_embarked, split == FALSE)
+```
+
+
+### Model
+
+```{r}
+set.seed(1234)
+rf.Embarked = randomForest(Embarked~Survived + Pclass+Sex+SibSp+Parch, data = clean_data_embarked,importance =TRUE, mtry = 3)
+importance(rf.Embarked)
+```
+
+```{r}
+yhat.Embarked = predict(rf.Embarked,newdata=test, type="response")
+confusion_matrix = table(test$Embarked,yhat.Embarked)
+confusion_matrix
+```
+```{r}
+124/(121+16+30+2+3)
+```
+Not great predictive power, but basically we only are replacing two values. (with 2 most likely) I could do more here by looking at other predictors that ARE probably predictive of location like fare and ticket, but for the sake of time I'm just going to leave it at embarkation = 2
+
+```{r}
+train_data$Embarked[which(is.na(train_data$Embarked))] = 2
+clean_data$Embarked[which(is.na(clean_data$Embarked))] = 2
+```
+
+
+## Age
+```{r}
+clean_data_age = clean_data[-which(is.na(train_data$Age)),]
+clean_data_age = clean_data_age[,-1] #Can't use survived here because OG test set doesn't tell me survived.
+clean_data_age
+```
+
+
+### Test/Train Split
+
+
+```{r}
+set.seed(1234)
+split = sample.split(clean_data_age$Age, SplitRatio = 0.8)
+train = subset(clean_data_age, split == TRUE) 
+test = subset(clean_data_age, split == FALSE)
+```
+
+
+### Model
+
+
+
+
+```{r}
+set.seed(1234)
+rf.Age = randomForest(Age~., data = clean_data_age,importance =TRUE, mtry = 4)
+importance(rf.Age)
+```
+
+```{r}
+yhat.Age = predict(rf.Age,newdata=test)
+mean((yhat.Age-test$Age)^2)
+```
+
+ooooph that is a a not great mean squared error, but lets keep rolling with it for now.
+
+```{r}
+clean_data$Age[which(is.na(clean_data$Age))] = predict(rf.Age, newdata = clean_data[which(is.na(clean_data$Age)),])
+train_data$Age[which(is.na(train_data$Age))] = predict(rf.Age, newdata = train_data[which(is.na(train_data$Age)),])
+```
+
+
+# Modedl Building
+
+```{r}
+clean_data
+```
+
+
+```{r}
+set.seed(1234)
+split = sample.split(clean_data$Survived, SplitRatio = 0.8)
+train = subset(clean_data, split == TRUE) 
+test = subset(clean_data, split == FALSE)
+```
+
+
+```{r}
+rf.Survived = randomForest(Survived~., data = train,importance =TRUE)
+yhat.Survived = predict(rf.Survived,newdata=test, type="response")
+confusion_matrix = table(test$Survived,yhat.Survived)
+confusion_matrix
+```
+```{r}
+140/178
+```
+not bad, but how does it compare to gender?
+
+```{r}
+yhat.gender = ifelse(test$Sex == 1, 1, 0)
+confusion_matrix = table(test$Survived,yhat.gender)
+confusion_matrix
+```
+```{r}
+136/178
+```
+Better, but not THAT much better. Let's go ahead and clean up the test data and submit
+
+# Test Data Cleanup
+```{r}
+test_data
+```
+
+```{r}
+test_data
+```
+
+
+```{r}
+test_data$Sex=factor(test_data$Sex, levels=c("male","female") ,labels = c(0,1))
+test_data$Pclass=factor(test_data$Pclass, levels = c(1,2,3), labels = c(0,1,2))
+test_data$Embarked=factor(test_data$Embarked, levels = c("C","Q","S"), labels = c(0,1,2))
+test_data_clean = test_data[,c(2,4,5,6,7,11)]
+test_data_clean
+```
+
+```{r}
+summary(test_data_clean)
+```
+Only missing values in Age
+
+
+```{r}
+test_data_clean$Age[which(is.na(test_data_clean$Age))]=predict(rf.Age,test_data_clean[which(is.na(test_data_clean$Age)),])
+```
+
+
+```{r}
+test_data_clean
+```
+
+```{r}
+predict(rf.Survived,test_data_clean)
+```
+
+
+```{r}
+Rfguess = data.frame(test_data$PassengerId, predict(rf.Survived,test_data_clean))
+colnames(Rfguess) <- c("PassengerId","Survived")
+Rfguess
+```
+
+```{r}
+write.csv(Rfguess, "rfguess.csv",row.names = FALSE)
+```
+
+Final score: 0.77751, not great but I'm in the top quarter and improved over the gender guesses at least! 
+
+```{r}
+bagged.Survived = randomForest(Survived~., data = train,importance =TRUE, mtry = 6)
+yhat.Survived = predict(bagged.Survived,newdata=test, type="response")
+confusion_matrix = table(test$Survived,yhat.Survived)
+confusion_matrix
+```
+```{r}
+110/188
+```
+a lot worse
+```{r}
+Baggedguess = data.frame(test_data$PassengerId, predict(bagged.Survived,test_data_clean))
+colnames(Baggedguess) <- c("PassengerId","Survived")
+write.csv(Baggedguess, "baguess.csv",row.names = FALSE)
+```
+
+
+```{r}
+boost.Survived = gbm(as.character(Survived)~., data = train, distribution="bernoulli", n.tree = 5000)
+best.iter <- gbm.perf(boost.Survived, method = "OOB", plot = FALSE)
+best.iter
+```
+```{r}
+prob = predict(boost.Survived, newdata=test, best.iter,type="response")
+yhat.Survived = ifelse(prob>.5, 1, 0)
+confusion_matrix = table(test$Survived,yhat.Survived)
+confusion_matrix
+```
+```{r}
+140/178
+```
+Same as RF
+
+```{r}
+boostedguess = data.frame(test_data$PassengerId, predict(boost.Survived,test_data_clean))
+colnames(boostedguess) <- c("PassengerId","Survived")
+write.csv(boostedguess, "boguess.csv",row.names = FALSE)
+```
+
+
+
+
+
